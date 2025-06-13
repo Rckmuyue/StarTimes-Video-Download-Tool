@@ -67,7 +67,7 @@ def load_config():
 def save_config(config):
     """Saves configuration to config.json."""
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+        json.dump(config, f, indent=4, ensure_ascii=False) # Fixed: Added 'f' as the file pointer
 
 def load_language_strings(lang_code):
     """Loads language strings from languages.json."""
@@ -80,44 +80,7 @@ def load_language_strings(lang_code):
 
 # --- Video Processing Functions ---
 
-def parse_star_init_data(data_string):
-    """Parses STAR-INIT-DATA string."""
-    try:
-        decoded_bytes = base64.b64decode(data_string)
-        decompressed_bytes = zlib.decompress(decoded_bytes)
-        json_data = json.loads(decompressed_bytes.decode('utf-8'))
-        return json_data
-    except Exception as e:
-        return None
-
-def extract_key_from_pssh(pssh_data):
-    """Extracts Key ID from PSSH data."""
-    try:
-        pssh_bytes = binascii.unhexlify(pssh_data)
-        widevine_system_id = binascii.unhexlify("EDEF8BA979D64ACEA3C827E2FC21DCD2")
-        system_id_offset = 4 + 4 + 1 + 3 # Standard PSSH box format
-        
-        if pssh_bytes[system_id_offset : system_id_offset + 16] == widevine_system_id:
-            data_size_offset = system_id_offset + 16
-            data_size = int.from_bytes(pssh_bytes[data_size_offset : data_size_offset + 4], 'big')
-            
-            num_key_ids_offset = data_size_offset + 4
-            if len(pssh_bytes) >= num_key_ids_offset + 4:
-                num_key_ids = int.from_bytes(pssh_bytes[num_key_ids_offset : num_key_ids_offset + 4], 'big')
-                if num_key_ids > 0:
-                    first_key_id_offset = num_key_ids_offset + 4
-                    if len(pssh_bytes) >= first_key_id_offset + 16:
-                        key_id_bytes = pssh_bytes[first_key_id_offset : first_key_id_offset + 16]
-                        return binascii.hexlify(key_id_bytes).decode('utf-8')
-            return "KID_NOT_FOUND_IN_PSSH_DATA"
-        
-        return None
-    except Exception as e:
-        return None
-
-def decrypt_key(encrypted_key_data, content_key_id):
-    """Placeholder for key decryption."""
-    return None
+# parse_star_init_data function is removed as it's no longer needed for binary data
 
 def download_m3u8(url, headers, lang_strings):
     """Downloads the M3U8 file."""
@@ -191,22 +154,36 @@ def combine_segments_py_binary(segments_dir, output_file, lang_strings):
     
     print(lang_strings["combining_segments"])
     
-    # Get all downloaded segment files and sort them numerically
+    # Get all downloaded segment files
     all_segment_files = glob.glob(os.path.join(segments_dir, "*"))
-    segment_files_to_combine = [f for f in all_segment_files if os.path.isfile(f) and not os.path.basename(f).startswith("input")]
+    
+    # Separate init.mp4 if it exists
+    init_mp4_path = os.path.join(segments_dir, "init.mp4")
+    has_init_mp4 = os.path.exists(init_mp4_path)
+    
+    # Filter out init.mp4 from the general list of segments
+    segment_files_to_sort = [f for f in all_segment_files if os.path.isfile(f) and f != init_mp4_path]
 
     def natural_sort_key(s):
         return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', os.path.basename(s))]
 
-    sorted_segment_paths = sorted(segment_files_to_combine, key=natural_sort_key)
+    # Sort the remaining segments numerically
+    sorted_other_segments = sorted(segment_files_to_sort, key=natural_sort_key)
     
-    if not sorted_segment_paths:
+    # Prepend init.mp4 if it exists
+    final_ordered_segments = []
+    if has_init_mp4:
+        final_ordered_segments.append(init_mp4_path)
+    
+    final_ordered_segments.extend(sorted_other_segments)
+
+    if not final_ordered_segments:
         print(lang_strings["no_segments_to_combine"])
         return False
 
     try:
         with open(output_file, 'wb') as outfile:
-            for segment_path in sorted_segment_paths:
+            for segment_path in final_ordered_segments:
                 with open(segment_path, 'rb') as infile:
                     outfile.write(infile.read())
         print(lang_strings["combine_success"])
@@ -214,7 +191,6 @@ def combine_segments_py_binary(segments_dir, output_file, lang_strings):
     except IOError as e:
         print(lang_strings["combine_failed_py_binary"].format(error=e))
         print(lang_strings["suggestions_header"])
-        print(lang_strings["space_issue_suggestion"])
         print(lang_strings["file_access_issue_suggestion"])
         return False
     except Exception as e:
@@ -239,6 +215,8 @@ def cleanup_files(lang_strings):
     print(lang_strings["cleanup_complete"].format(deleted=deleted_count))
 
 # --- Main Logic ---
+
+# ... (rest of the imports and classes remain the same)
 
 def main():
     config = load_config()
@@ -324,41 +302,37 @@ def main():
 
         init_segment_url, segments, star_init_data = parse_m3u8(m3u8_content, lang_strings)
 
-        # --- Handle STAR-INIT-DATA and DRM (if applicable) ---
-        decryption_key = None
-        content_key_id = None
-        if star_init_data:
-            parsed_star_data = parse_star_init_data(star_init_data)
-            if parsed_star_data:
-                pssh_data = parsed_star_data.get('pssh')
-                encrypted_key = parsed_star_data.get('encryptedKey')
-
-                if pssh_data:
-                    content_key_id = extract_key_from_pssh(pssh_data)
-                    if content_key_id:
-                        print(lang_strings["content_key_id_found"].format(kid=content_key_id))
-                    else:
-                        print(lang_strings["content_key_id_not_found"])
-
-                if encrypted_key and content_key_id:
-                    print(lang_strings["attempting_key_decryption"])
-                    if decryption_key:
-                        print(lang_strings["key_decryption_success"])
-                    else:
-                        print(lang_strings["key_decryption_failed"])
-                        print(lang_strings["drm_hint"])
-                else:
-                    print(lang_strings["no_encrypted_key_or_pssh"])
-            else:
-                print(lang_strings["failed_to_parse_star_init_data"])
-        
         # --- Create downloads directory ---
         downloads_dir = os.path.join(SCRIPT_DIR, "downloads")
         os.makedirs(downloads_dir, exist_ok=True)
 
-        # Make segment URLs absolute and ensure init.mp4 is first
+        # --- Handle STAR-INIT-DATA as a binary init.mp4 ---
+        if star_init_data:
+            init_mp4_path = os.path.join(downloads_dir, "init.mp4")
+            try:
+                # 1. Base64 Decode
+                base64_decoded_data = base64.b64decode(star_init_data)
+                
+                # 2. Zlib Decompress
+                decompressed_data = zlib.decompress(base64_decoded_data) # Add this line
+
+                with open(init_mp4_path, 'wb') as f:
+                    f.write(decompressed_data) # Write the decompressed data
+                print(lang_strings["star_init_data_saved_as_init_mp4"].format(path=init_mp4_path))
+                
+                # If STAR-INIT-DATA was used for init.mp4, clear init_segment_url
+                # to prevent it from being added to the download list.
+                # This handles cases where init_segment_url points to the same content.
+                if init_segment_url:
+                    print(lang_strings["removed_redundant_init_segment_url"])
+                    init_segment_url = None # Nullify it so it's not re-added to segments
+                
+            except (binascii.Error, zlib.error, Exception) as e: # Catch zlib errors too
+                print(lang_strings["failed_to_save_star_init_data"].format(error=e))
+        
+        # Make segment URLs absolute
         processed_segments = []
-        if init_segment_url:
+        if init_segment_url: # Only add if it wasn't handled by STAR-INIT-DATA
             if not (init_segment_url.startswith("http://") or init_segment_url.startswith("https://")):
                 processed_segments.append(urljoin(m3u8_url, init_segment_url))
             else:
@@ -374,44 +348,55 @@ def main():
 
         # --- Download Segments ---
         if not segments:
-            print(lang_strings["no_segments_to_download"])
-            input(lang_strings["press_enter_to_exit"])
-            sys.exit(1)
+            # If no segments *and* no init.mp4 was saved from STAR-INIT-DATA, then it's an issue.
+            # However, if init.mp4 was saved, the download can proceed with 0 segments if that's the case.
+            if not os.path.exists(os.path.join(downloads_dir, "init.mp4")):
+                print(lang_strings["no_segments_found"]) 
+                input(lang_strings["press_enter_to_exit"])
+                sys.exit(1)
+            else:
+                print(lang_strings["no_additional_segments_to_download"])
+
 
         downloader = Downloader()
-        downloader.total = len(segments)
+        downloader.total = len(segments) # Total only for actual segments to be downloaded
         
-        print(lang_strings["start_downloading_segments"].format(count=len(segments)))
-        
-        # Use ThreadPoolExecutor for concurrent downloads
-        max_workers = 10
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_segment = {}
-            for i, segment_url in enumerate(segments):
-                ext = os.path.splitext(urlparse(segment_url).path)[1] or '.ts'
-                segment_filename = f"{i:05d}{ext}" if not (i == 0 and urlparse(segment_url).path.endswith('.mp4') and 'init' in urlparse(segment_url).path.lower()) else "init.mp4"
-                segment_path = os.path.join(downloads_dir, segment_filename)
-                
-                future = executor.submit(
-                    download_segment, 
-                    segment_url, 
-                    current_headers, 
-                    segment_path,
-                    lang_strings, 
-                    downloader
-                )
-                future_to_segment[future] = segment_url
+        if len(segments) > 0:
+            print(lang_strings["start_downloading_segments"].format(count=len(segments)))
             
-            for future in concurrent.futures.as_completed(future_to_segment):
-                segment_url = future_to_segment[future]
-                try:
-                    success = future.result()
-                    if not success:
-                        print(lang_strings["segment_download_failed_summary"].format(url=segment_url))
-                except Exception as exc:
-                    print(lang_strings["segment_download_exception"].format(url=segment_url, error=exc))
-        
-        print(f"\n{lang_strings['download_summary'].format(completed=downloader.completed, failed=downloader.failed, total=downloader.total)}")
+            # Use ThreadPoolExecutor for concurrent downloads
+            max_workers = 10
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_segment = {}
+                for i, segment_url in enumerate(segments):
+                    ext = os.path.splitext(urlparse(segment_url).path)[1] or '.ts'
+                    # Use a consistent naming convention for segments, init.mp4 is already handled separately
+                    segment_filename = f"{i:05d}{ext}" 
+                    segment_path = os.path.join(downloads_dir, segment_filename)
+                    
+                    future = executor.submit(
+                        download_segment, 
+                        segment_url, 
+                        current_headers, 
+                        segment_path,
+                        lang_strings, 
+                        downloader
+                    )
+                    future_to_segment[future] = segment_url
+                
+                for future in concurrent.futures.as_completed(future_to_segment):
+                    segment_url = future_to_segment[future]
+                    try:
+                        success = future.result()
+                        if not success:
+                            print(lang_strings["segment_download_failed_summary"].format(url=segment_url))
+                    except Exception as exc:
+                        print(lang_strings["segment_download_exception"].format(url=segment_url, error=exc))
+            
+            print(f"\n{lang_strings['download_summary'].format(completed=downloader.completed, failed=downloader.failed, total=downloader.total)}")
+        else:
+            print(lang_strings["no_segments_to_download_summary"])
+
 
         # --- Combine Segments ---
         final_output_file_name = os.path.basename(urlparse(m3u8_url).path).replace(".m3u8", ".mp4")
